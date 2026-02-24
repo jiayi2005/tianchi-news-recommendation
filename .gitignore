@@ -3,3 +3,5 @@
 tcdata
 user_data
 prediction_result
+.DS_Store
+data/

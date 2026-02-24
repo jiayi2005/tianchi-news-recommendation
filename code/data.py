@@ -27,16 +27,16 @@ log.info(f'数据处理，mode: {mode}')
 
 
 def data_offline(df_train_click, df_test_click):
-    train_users = df_train_click['user_id'].values.tolist()
+    train_users = df_train_click['user_id'].unique().tolist()
     # 随机采样出一部分样本
-    val_users = sample(train_users, 50000)
-    log.debug(f'val_users num: {len(set(val_users))}')
+    val_users = set(sample(train_users, 50000))
+    log.debug(f'val_users num: {len(val_users)}')
 
     # 训练集用户 抽出行为数据最后一条作为线下验证集
     click_list = []
     valid_query_list = []
 
-    groups = df_train_click.groupby(['user_id'])
+    groups = df_train_click.groupby('user_id')
     for user_id, g in tqdm(groups):
         if user_id in val_users:
             valid_query = g.tail(1)
@@ -108,8 +108,8 @@ def data_online(df_train_click, df_test_click):
 
 
 if __name__ == '__main__':
-    df_train_click = pd.read_csv('../tcdata/train_click_log.csv')
-    df_test_click = pd.read_csv('../tcdata/testB_click_log_Test_B.csv')
+    df_train_click = pd.read_csv('../data/train_click_log.csv')
+    df_test_click = pd.read_csv('../data/testA_click_log.csv')
 
     log.debug(
         f'df_train_click shape: {df_train_click.shape}, df_test_click shape: {df_test_click.shape}'
