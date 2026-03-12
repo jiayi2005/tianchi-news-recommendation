@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 max_threads = multitasking.config['CPU_CORES']
 multitasking.set_max_threads(max_threads)
-multitasking.set_engine('process')
+multitasking.set_engine('threading')
 signal.signal(signal.SIGINT, multitasking.killall)
 
 
@@ -179,7 +179,7 @@ def gen_sub(prediction):
 
     all_articles = set(prediction['article_id'].values)
 
-    sub_sample = pd.read_csv('../tcdata/testB_click_log_Test_B.csv')
+    sub_sample = pd.read_csv('../data/testB_click_log.csv')
     test_users = sub_sample.user_id.unique()
 
     n_split = max_threads

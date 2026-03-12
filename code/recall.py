@@ -19,7 +19,7 @@ warnings.filterwarnings('ignore')
 
 max_threads = multitasking.config['CPU_CORES']
 multitasking.set_max_threads(max_threads)
-multitasking.set_engine('process')
+multitasking.set_engine('threading')
 signal.signal(signal.SIGINT, multitasking.killall)
 
 random.seed(2020)
@@ -52,8 +52,11 @@ def mms(df):
 
     ans = []
     for user_id, sim_score in tqdm(df[['user_id', 'sim_score']].values):
-        ans.append((sim_score - user_score_min[user_id]) /
-                   (user_score_max[user_id] - user_score_min[user_id]) +
+        score_range = user_score_max[user_id] - user_score_min[user_id]
+        if score_range == 0:
+            ans.append(10**-3)
+            continue
+        ans.append((sim_score - user_score_min[user_id]) / score_range +
                    10**-3)
     return ans
 
@@ -84,7 +87,69 @@ def recall_result_sim(df1_, df2_):
             inters = item_set1 & item_set2
             hit_cnt += len(inters)
 
+    if cnt == 0:
+        return 0
     return hit_cnt / cnt
+
+
+def get_hot_items(df_click, topn=200):
+    df_stat = df_click.groupby('click_article_id').agg(
+        click_cnt=('click_article_id', 'count'),
+        last_ts=('click_timestamp', 'max')).reset_index()
+    df_stat.sort_values(['click_cnt', 'last_ts'], ascending=False, inplace=True)
+    return df_stat['click_article_id'].values.tolist()[:topn]
+
+
+def fill_cold_start(recall_df, df_query, df_click, min_recall=50):
+    hot_items = get_hot_items(df_click, topn=min_recall * 5)
+
+    user_item_dict = recall_df.groupby('user_id')['article_id'].agg(
+        lambda x: set(x)).to_dict()
+
+    data_list = []
+    for user_id, item_id in tqdm(df_query.values):
+        existed = user_item_dict.get(user_id, set())
+        need = min_recall - len(existed)
+        if need <= 0:
+            continue
+
+        rec_items = []
+        for item in hot_items:
+            if item in existed:
+                continue
+            rec_items.append(item)
+            if len(rec_items) >= need:
+                break
+
+        if not rec_items:
+            continue
+
+        scores = [1.0 / (idx + 1) for idx in range(len(rec_items))]
+
+        df_temp = pd.DataFrame({
+            'user_id': user_id,
+            'article_id': rec_items,
+            'sim_score': scores
+        })
+
+        if item_id == -1:
+            df_temp['label'] = np.nan
+        else:
+            df_temp['label'] = 0
+            df_temp.loc[df_temp['article_id'] == item_id, 'label'] = 1
+
+        data_list.append(df_temp)
+
+    if not data_list:
+        return recall_df
+
+    df_extra = pd.concat(data_list, sort=False)
+    df_extra['user_id'] = df_extra['user_id'].astype('int')
+    df_extra['article_id'] = df_extra['article_id'].astype('int')
+
+    recall_df = pd.concat([recall_df, df_extra], sort=False)
+    recall_df = recall_df.drop_duplicates(['user_id', 'article_id'])
+    return recall_df
 
 
 if __name__ == '__main__':
@@ -101,24 +166,38 @@ if __name__ == '__main__':
 
     log.debug(f'max_threads {max_threads}')
 
-    recall_methods = ['itemcf', 'w2v', 'binetwork']
+    recall_methods = [
+        'itemcf', 'w2v', 'binetwork', 'usercf', 'youtubednn', 'coldstart'
+    ]
 
-    weights = {'itemcf': 1, 'binetwork': 1, 'w2v': 0.1}
+    weights = {
+        'itemcf': 1,
+        'binetwork': 1,
+        'w2v': 0.1,
+        'usercf': 0.8,
+        'youtubednn': 1.0,
+        'coldstart': 0.05,
+    }
     recall_list = []
     recall_dict = {}
+    used_methods = []
     for recall_method in recall_methods:
-        recall_result = pd.read_pickle(
-            f'{recall_path}/recall_{recall_method}.pkl')
-        weight = weights[recall_method]
+        recall_file = f'{recall_path}/recall_{recall_method}.pkl'
+        if not os.path.exists(recall_file):
+            log.warning(f'缺少召回文件: {recall_file}，跳过该召回方式')
+            continue
+        recall_result = pd.read_pickle(recall_file)
+        weight = weights.get(recall_method, 1.0)
 
         recall_result['sim_score'] = mms(recall_result)
         recall_result['sim_score'] = recall_result['sim_score'] * weight
 
         recall_list.append(recall_result)
         recall_dict[recall_method] = recall_result
+        used_methods.append(recall_method)
 
     # 求相似度
-    for recall_method1, recall_method2 in permutations(recall_methods, 2):
+    for recall_method1, recall_method2 in permutations(used_methods, 2):
         score = recall_result_sim(recall_dict[recall_method1],
                                   recall_dict[recall_method2])
         log.debug(f'召回相似度 {recall_method1}-{recall_method2}: {score}')
@@ -133,6 +212,12 @@ if __name__ == '__main__':
     recall_final = recall_final[['user_id', 'article_id', 'label'
                                  ]].drop_duplicates(['user_id', 'article_id'])
     recall_final = recall_final.merge(recall_score, how='left')
+
+    # 冷启动兜底，保证每个用户至少有一定数量的召回
+    recall_final = fill_cold_start(recall_final,
+                                   df_query,
+                                   df_click,
+                                   min_recall=50)
 
     recall_final.sort_values(['user_id', 'sim_score'],
                              inplace=True,

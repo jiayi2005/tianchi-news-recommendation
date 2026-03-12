@@ -16,7 +16,7 @@ from utils import Logger, evaluate
 
 max_threads = multitasking.config['CPU_CORES']
 multitasking.set_max_threads(max_threads)
-multitasking.set_engine('process')
+multitasking.set_engine('threading')
 signal.signal(signal.SIGINT, multitasking.killall)
 
 random.seed(2020)
@@ -164,11 +164,12 @@ if __name__ == '__main__':
     multitasking.wait_for_tasks()
     log.info('合并任务')
 
-    df_data = pd.DataFrame()
+    dfs = []
     for path, _, file_list in os.walk('../user_data/tmp/itemcf'):
         for file_name in file_list:
             df_temp = pd.read_pickle(os.path.join(path, file_name))
-            df_data = df_data.append(df_temp)
+            dfs.append(df_temp)
+    df_data = pd.concat(dfs, ignore_index=True)
 
     # 必须加，对其进行排序
     df_data = df_data.sort_values(['user_id', 'sim_score'],

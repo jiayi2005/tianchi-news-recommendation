@@ -1,5 +1,4 @@
 import argparse
-import math
 import os
 import pickle
 import random
@@ -27,20 +26,24 @@ signal.signal(signal.SIGINT, multitasking.killall)
 seed = 2020
 random.seed(seed)
 
-# 命令行参数
-parser = argparse.ArgumentParser(description='w2v 召回')
+# CLI args
+parser = argparse.ArgumentParser(description='youtubednn recall')
 parser.add_argument('--mode', default='valid')
 parser.add_argument('--logfile', default='test.log')
+parser.add_argument('--seq_len', type=int, default=50)
+parser.add_argument('--decay', type=float, default=0.7)
 
 args = parser.parse_args()
 
 mode = args.mode
 logfile = args.logfile
+seq_len = args.seq_len
+decay = args.decay
 
-# 初始化日志
+# Init logger
 os.makedirs('../user_data/log', exist_ok=True)
 log = Logger(f'../user_data/log/{logfile}').logger
-log.info(f'w2v 召回，mode: {mode}')
+log.info(f'youtubednn recall, mode: {mode}')
 
 
 def word2vec(df_, f1, f2, model_path):
@@ -80,32 +83,62 @@ def word2vec(df_, f1, f2, model_path):
     return article_vec_map
 
 
+def build_user_embedding(hist_items, article_vec_map, decay):
+    if not hist_items:
+        return None
+    hist_items = hist_items[::-1]
+    weights = np.array([decay**i for i in range(len(hist_items))],
+                       dtype=np.float32)
+    emb_list = []
+    valid_weights = []
+    for item, w in zip(hist_items, weights):
+        if item not in article_vec_map:
+            continue
+        emb_list.append(article_vec_map[item])
+        valid_weights.append(w)
+
+    if not emb_list:
+        return None
+
+    emb_mat = np.vstack(emb_list)
+    w = np.array(valid_weights, dtype=np.float32)
+    user_emb = np.average(emb_mat, axis=0, weights=w)
+    return user_emb
+
+
 @multitasking.task
 def recall(df_query, article_vec_map, article_index, user_item_dict,
-           worker_id):
+           worker_id, seq_len=50, decay=0.7):
     data_list = []
 
     for user_id, item_id in tqdm(df_query.values):
-        rank = defaultdict(int)
+        if user_id not in user_item_dict:
+            continue
 
         interacted_items = user_item_dict[user_id]
-        interacted_items = interacted_items[-1:]
+        interacted_set = set(interacted_items)
+        hist_items = interacted_items[-seq_len:]
 
-        for item in interacted_items:
-            article_vec = article_vec_map[item]
+        user_emb = build_user_embedding(hist_items, article_vec_map, decay)
+        if user_emb is None:
+            continue
 
-            item_ids, distances = article_index.get_nns_by_vector(
-                article_vec, 100, include_distances=True)
-            sim_scores = [2 - distance for distance in distances]
+        item_ids, distances = article_index.get_nns_by_vector(
+            user_emb, 200, include_distances=True)
+        sim_scores = [2 - distance for distance in distances]
 
-            for relate_item, wij in zip(item_ids, sim_scores):
-                if relate_item not in interacted_items:
-                    rank.setdefault(relate_item, 0)
-                    rank[relate_item] += wij
+        rank = defaultdict(float)
+        for relate_item, wij in zip(item_ids, sim_scores):
+            if relate_item in interacted_set:
+                continue
+            rank[relate_item] += wij
 
-        sim_items = sorted(rank.items(), key=lambda d: d[1], reverse=True)[:50]
+        sim_items = sorted(rank.items(), key=lambda d: d[1], reverse=True)[:100]
         item_ids = [item[0] for item in sim_items]
         item_sim_scores = [item[1] for item in sim_items]
+
+        if not item_ids:
+            continue
 
         df_temp = pd.DataFrame()
         df_temp['article_id'] = item_ids
@@ -124,10 +157,13 @@ def recall(df_query, article_vec_map, article_index, user_item_dict,
 
         data_list.append(df_temp)
 
-    df_data = pd.concat(data_list, sort=False)
+    if data_list:
+        df_data = pd.concat(data_list, sort=False)
+    else:
+        df_data = pd.DataFrame(columns=['user_id', 'article_id', 'sim_score', 'label'])
 
-    os.makedirs('../user_data/tmp/w2v', exist_ok=True)
-    df_data.to_pickle('../user_data/tmp/w2v/{}.pkl'.format(worker_id))
+    os.makedirs('../user_data/tmp/youtubednn', exist_ok=True)
+    df_data.to_pickle(f'../user_data/tmp/youtubednn/{worker_id}.pkl')
 
 
 if __name__ == '__main__':
@@ -153,13 +189,16 @@ if __name__ == '__main__':
     log.debug(f'df_click shape: {df_click.shape}')
     log.debug(f'{df_click.head()}')
 
-    article_vec_map = word2vec(df_click, 'user_id', 'click_article_id',
-                               model_path)
-    f = open(w2v_file, 'wb')
-    pickle.dump(article_vec_map, f)
-    f.close()
+    if os.path.exists(w2v_file):
+        with open(w2v_file, 'rb') as f:
+            article_vec_map = pickle.load(f)
+    else:
+        article_vec_map = word2vec(df_click, 'user_id', 'click_article_id',
+                                   model_path)
+        with open(w2v_file, 'wb') as f:
+            pickle.dump(article_vec_map, f)
 
-    # 将 embedding 建立索引
+    # Build ANN index for item embeddings
     article_index = AnnoyIndex(256, 'angular')
     article_index.set_seed(2020)
 
@@ -173,42 +212,46 @@ if __name__ == '__main__':
     user_item_dict = dict(
         zip(user_item_['user_id'], user_item_['click_article_id']))
 
-    # 召回
+    # Recall
     n_split = max_threads
     all_users = df_query['user_id'].unique()
     shuffle(all_users)
     total = len(all_users)
-    n_len = total // n_split
+    n_len = max(1, total // n_split)
 
-    # 清空临时文件夹
-    for path, _, file_list in os.walk('../tmp/w2v'):
+    # Clear temp folder
+    for path, _, file_list in os.walk('../user_data/tmp/youtubednn'):
         for file_name in file_list:
             os.remove(os.path.join(path, file_name))
 
     for i in range(0, total, n_len):
         part_users = all_users[i:i + n_len]
         df_temp = df_query[df_query['user_id'].isin(part_users)]
-        recall(df_temp, article_vec_map, article_index, user_item_dict, i)
+        recall(df_temp, article_vec_map, article_index, user_item_dict, i,
+               seq_len=seq_len, decay=decay)
 
     multitasking.wait_for_tasks()
-    log.info('合并任务')
+    log.info('merge tasks')
 
     dfs = []
-    for path, _, file_list in os.walk('../user_data/tmp/w2v'):
+    for path, _, file_list in os.walk('../user_data/tmp/youtubednn'):
         for file_name in file_list:
             df_temp = pd.read_pickle(os.path.join(path, file_name))
             dfs.append(df_temp)
-    df_data = pd.concat(dfs, ignore_index=True)
+    if dfs:
+        df_data = pd.concat(dfs, ignore_index=True)
+    else:
+        df_data = pd.DataFrame(columns=['user_id', 'article_id', 'sim_score', 'label'])
 
-    # 必须加，对其进行排序
+    # Sort by score
     df_data = df_data.sort_values(['user_id', 'sim_score'],
                                   ascending=[True,
                                              False]).reset_index(drop=True)
     log.debug(f'df_data.head: {df_data.head()}')
 
-    # 计算召回指标
+    # Evaluate recall metrics
     if mode == 'valid':
-        log.info(f'计算召回指标')
+        log.info('eval recall metrics')
 
         total = df_query[df_query['click_article_id'] != -1].user_id.nunique()
 
@@ -216,10 +259,11 @@ if __name__ == '__main__':
             df_data[df_data['label'].notnull()], total)
 
         log.debug(
-            f'w2v: {hitrate_5}, {mrr_5}, {hitrate_10}, {mrr_10}, {hitrate_20}, {mrr_20}, {hitrate_40}, {mrr_40}, {hitrate_50}, {mrr_50}'
+            f'youtubednn: {hitrate_5}, {mrr_5}, {hitrate_10}, {mrr_10}, {hitrate_20}, {mrr_20}, {hitrate_40}, {mrr_40}, {hitrate_50}, {mrr_50}'
         )
-    # 保存召回结果
+
+    # Save recall result
     if mode == 'valid':
-        df_data.to_pickle('../user_data/data/offline/recall_w2v.pkl')
+        df_data.to_pickle('../user_data/data/offline/recall_youtubednn.pkl')
     else:
-        df_data.to_pickle('../user_data/data/online/recall_w2v.pkl')
+        df_data.to_pickle('../user_data/data/online/recall_youtubednn.pkl')

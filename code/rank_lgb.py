@@ -58,7 +58,7 @@ def train_model(df_feature, df_query):
                                reg_lambda=0.5,
                                random_state=seed,
                                importance_type='gain',
-                               metric=None)
+                               metric='auc')
 
     oof = []
     prediction = df_test[['user_id', 'article_id']]
@@ -84,9 +84,10 @@ def train_model(df_feature, df_query):
                               Y_train,
                               eval_names=['train', 'valid'],
                               eval_set=[(X_train, Y_train), (X_val, Y_val)],
-                              verbose=100,
-                              eval_metric='auc',
-                              early_stopping_rounds=100)
+                              callbacks=[
+                                  lgb.log_evaluation(100),
+                                  lgb.early_stopping(100)
+                              ])
 
         pred_val = lgb_model.predict_proba(
             X_val, num_iteration=lgb_model.best_iteration_)[:, 1]

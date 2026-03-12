@@ -130,7 +130,7 @@ if __name__ == '__main__':
     # 文章特征
     log.debug(f'df_feature.shape: {df_feature.shape}')
 
-    df_article = pd.read_csv('../tcdata/articles.csv')
+    df_article = pd.read_csv('../data/articles.csv')
     df_article['created_at_ts'] = df_article['created_at_ts'] / 1000
     df_article['created_at_ts'] = df_article['created_at_ts'].astype('int')
     df_feature = df_feature.merge(df_article, how='left')
@@ -181,59 +181,49 @@ if __name__ == '__main__':
         'click_timestamp'] - df_click['created_at_ts']
 
     # 点击文章的创建时间差的统计值
-    df_temp = df_click.groupby(
-        ['user_id'])['click_timestamp_created_at_ts_diff'].agg({
-            'user_click_timestamp_created_at_ts_diff_mean':
-            'mean',
-            'user_click_timestamp_created_at_ts_diff_std':
-            'std'
-        }).reset_index()
+    df_temp = df_click.groupby(['user_id']).agg(
+        user_click_timestamp_created_at_ts_diff_mean=('click_timestamp_created_at_ts_diff', 'mean'),
+        user_click_timestamp_created_at_ts_diff_std=('click_timestamp_created_at_ts_diff', 'std')
+    ).reset_index()
     df_feature = df_feature.merge(df_temp, how='left')
 
     log.debug(f'df_feature.shape: {df_feature.shape}')
     log.debug(f'df_feature.columns: {df_feature.columns.tolist()}')
 
     # 点击的新闻的 click_datetime_hour 统计值
-    df_temp = df_click.groupby(['user_id'])['click_datetime_hour'].agg({
-        'user_click_datetime_hour_std':
-        'std'
-    }).reset_index()
+    df_temp = df_click.groupby(['user_id']).agg(
+        user_click_datetime_hour_std=('click_datetime_hour', 'std')
+    ).reset_index()
     df_feature = df_feature.merge(df_temp, how='left')
 
     log.debug(f'df_feature.shape: {df_feature.shape}')
     log.debug(f'df_feature.columns: {df_feature.columns.tolist()}')
 
     # 点击的新闻的 words_count 统计值
-    df_temp = df_click.groupby(['user_id'])['words_count'].agg({
-        'user_clicked_article_words_count_mean':
-        'mean',
-        'user_click_last_article_words_count':
-        lambda x: x.iloc[-1]
-    }).reset_index()
+    df_temp = df_click.groupby(['user_id']).agg(
+        user_clicked_article_words_count_mean=('words_count', 'mean'),
+        user_click_last_article_words_count=('words_count', lambda x: x.iloc[-1])
+    ).reset_index()
     df_feature = df_feature.merge(df_temp, how='left')
 
     log.debug(f'df_feature.shape: {df_feature.shape}')
     log.debug(f'df_feature.columns: {df_feature.columns.tolist()}')
 
     # 点击的新闻的 created_at_ts 统计值
-    df_temp = df_click.groupby('user_id')['created_at_ts'].agg({
-        'user_click_last_article_created_time':
-        lambda x: x.iloc[-1],
-        'user_clicked_article_created_time_max':
-        'max',
-    }).reset_index()
+    df_temp = df_click.groupby('user_id').agg(
+        user_click_last_article_created_time=('created_at_ts', lambda x: x.iloc[-1]),
+        user_clicked_article_created_time_max=('created_at_ts', 'max')
+    ).reset_index()
     df_feature = df_feature.merge(df_temp, how='left')
 
     log.debug(f'df_feature.shape: {df_feature.shape}')
     log.debug(f'df_feature.columns: {df_feature.columns.tolist()}')
 
     # 点击的新闻的 click_timestamp 统计值
-    df_temp = df_click.groupby('user_id')['click_timestamp'].agg({
-        'user_click_last_article_click_time':
-        lambda x: x.iloc[-1],
-        'user_clicked_article_click_time_mean':
-        'mean',
-    }).reset_index()
+    df_temp = df_click.groupby('user_id').agg(
+        user_click_last_article_click_time=('click_timestamp', lambda x: x.iloc[-1]),
+        user_clicked_article_click_time_mean=('click_timestamp', 'mean')
+    ).reset_index()
     df_feature = df_feature.merge(df_temp, how='left')
 
     log.debug(f'df_feature.shape: {df_feature.shape}')

@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from utils import Logger
 
-random.seed(2020)
+random.seed(2026)
 
 # 命令行参数
 parser = argparse.ArgumentParser(description='数据处理')
