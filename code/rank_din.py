@@ -75,6 +75,15 @@ def build_article_cate_map(article_path):
     return article_cate_idx, cate_map
 
 
+def resolve_article_path():
+    """Prefer local project articles metadata; keep legacy fallback for compatibility."""
+    candidates = ['../data/articles.csv', '../tcdata/articles.csv']
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
 def build_user_hist_cache(df_click, item_map, seq_len):
     df_click = df_click.sort_values(['user_id', 'click_timestamp'])
     user_hist = df_click.groupby('user_id')['click_article_id'].agg(list)
@@ -220,7 +229,7 @@ if __name__ == '__main__':
 
     os.makedirs(model_dir, exist_ok=True)
 
-    article_path = '../tcdata/articles.csv'
+    article_path = resolve_article_path()
 
     if mode == 'valid':
         # Build mappings and train in valid mode
